@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/config"
-	"github.com/hashicorp/nomad/client/driver"
 	"github.com/hashicorp/nomad/client/vaultclient"
 	"github.com/hashicorp/nomad/nomad/structs"
 
@@ -48,8 +47,9 @@ type AllocRunner struct {
 
 	dirtyCh chan struct{}
 
-	ctx        *driver.ExecContext
-	ctxLock    sync.Mutex
+	allocDir     *allocdir.AllocDir
+	allocDirLock sync.RWMutex
+
 	tasks      map[string]*TaskRunner
 	taskStates map[string]*structs.TaskState
 	restored   map[string]struct{}
@@ -78,7 +78,6 @@ type allocRunnerState struct {
 	Alloc                  *structs.Allocation
 	AllocClientStatus      string
 	AllocClientDescription string
-	Context                *driver.ExecContext
 }
 
 // NewAllocRunner is used to create a new allocation context
@@ -204,14 +203,9 @@ func (r *AllocRunner) saveAllocRunnerState() error {
 	allocClientDescription := r.allocClientDescription
 	r.allocLock.Unlock()
 
-	r.ctxLock.Lock()
-	ctx := r.ctx
-	r.ctxLock.Unlock()
-
 	snap := allocRunnerState{
 		Version:                r.config.Version,
 		Alloc:                  alloc,
-		Context:                ctx,
 		AllocClientStatus:      allocClientStatus,
 		AllocClientDescription: allocClientDescription,
 	}
@@ -409,16 +403,17 @@ func (r *AllocRunner) Run() {
 	}
 
 	// Create the execution context
-	r.ctxLock.Lock()
-	if r.ctx == nil {
-		allocDir := allocdir.NewAllocDir(filepath.Join(r.config.AllocDir, r.alloc.ID))
-		if err := allocDir.Build(tg.Tasks); err != nil {
+	r.allocDirLock.Lock()
+	if r.allocDir == nil {
+		// Build allocation directory
+		r.allocDir = allocdir.NewAllocDir(filepath.Join(r.config.AllocDir, r.alloc.ID))
+		if err := allocDir.Build(); err != nil {
 			r.logger.Printf("[WARN] client: failed to build task directories: %v", err)
 			r.setStatus(structs.AllocClientStatusFailed, fmt.Sprintf("failed to build task dirs for '%s'", alloc.TaskGroup))
 			r.ctxLock.Unlock()
 			return
 		}
-		r.ctx = driver.NewExecContext(allocDir, r.alloc.ID)
+
 		if r.otherAllocDir != nil {
 			if err := allocDir.Move(r.otherAllocDir, tg.Tasks); err != nil {
 				r.logger.Printf("[ERROR] client: failed to move alloc dir into alloc %q: %v", r.alloc.ID, err)
@@ -428,7 +423,7 @@ func (r *AllocRunner) Run() {
 			}
 		}
 	}
-	r.ctxLock.Unlock()
+	r.allocDirLock.Unlock()
 
 	// Check if the allocation is in a terminal status. In this case, we don't
 	// start any of the task runners and directly wait for the destroy signal to
@@ -448,7 +443,11 @@ func (r *AllocRunner) Run() {
 			continue
 		}
 
-		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, r.ctx, r.Alloc(), task.Copy(), r.vaultClient)
+		r.allocDirLock.RLock()
+		taskdir := allocdir.NewTaskDir(r.allocDir.AllocDir, task.Name)
+		r.allocDirLock.RUnlock()
+
+		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, taskdir, r.Alloc(), task.Copy(), r.vaultClient)
 		r.tasks[task.Name] = tr
 		tr.MarkReceived()
 

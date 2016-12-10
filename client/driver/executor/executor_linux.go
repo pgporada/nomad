@@ -22,19 +22,6 @@ import (
 )
 
 var (
-	// A mapping of directories on the host OS to attempt to embed inside each
-	// task's chroot.
-	DefaultChrootEnv = map[string]string{
-		"/bin":            "/bin",
-		"/etc":            "/etc",
-		"/lib":            "/lib",
-		"/lib32":          "/lib32",
-		"/lib64":          "/lib64",
-		"/run/resolvconf": "/run/resolvconf",
-		"/sbin":           "/sbin",
-		"/usr":            "/usr",
-	}
-
 	// The statistics the executor exposes when using cgroups
 	ExecutorCgroupMeasuredMemStats = []string{"RSS", "Cache", "Swap", "Max Usage", "Kernel Usage", "Kernel Max Usage"}
 	ExecutorCgroupMeasuredCpuStats = []string{"System Mode", "User Mode", "Throttled Periods", "Throttled Time", "Percent"}

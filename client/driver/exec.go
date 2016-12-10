@@ -89,6 +89,7 @@ func (d *ExecDriver) Validate(config map[string]interface{}) error {
 func (d *ExecDriver) Abilities() DriverAbilities {
 	return DriverAbilities{
 		SendSignals: true,
+		FSIsolation: FSIsolationChroot,
 	}
 }
 
@@ -105,37 +106,12 @@ func (d *ExecDriver) Prestart(ctx *ExecContext, task *structs.Task) error {
 	filter := strings.Split(d.config.ReadDefault("env.blacklist", config.DefaultEnvBlacklist), ",")
 	d.taskEnv.AppendHostEnvvars(filter)
 
-	// Build chroot
-	allocDir := ctx.AllocDir
-	if err := allocDir.MountSharedDir(task.Name); err != nil {
-		return err
-	}
-
-	//TODO move
-	chroot := executor.DefaultChrootEnv
-	if len(d.config.ChrootEnv) > 0 {
-		chroot = d.config.ChrootEnv
-	}
-
-	if err := allocDir.Embed(task.Name, chroot); err != nil {
-		return err
-	}
-
-	// Set the tasks AllocDir environment variable.
+	// Set the task's path environment variables.
 	d.taskEnv.
-		SetAllocDir(filepath.Join("/", allocdir.SharedAllocName)).
-		SetTaskLocalDir(filepath.Join("/", allocdir.TaskLocal)).
-		SetSecretsDir(filepath.Join("/", allocdir.TaskSecrets))
+		SetAllocDir(allocdir.SharedAllocContainerPath).
+		SetTaskLocalDir(allocdir.TaskLocalContainerPath).
+		SetSecretsDir(allocdir.TaskSecretsContainerPath)
 
-	taskDir, ok := allocDir.TaskDirs[task.Name]
-	if !ok {
-		return fmt.Errorf("Could not find task directory for task: %v", task.Name)
-	}
-	d.taskDir = taskDir
-
-	if err := allocDir.MountSpecialDirs(taskDir); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -163,7 +139,7 @@ func (d *ExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		TaskEnv: d.taskEnv,
 		Driver:  "exec",
 		AllocID: ctx.AllocID,
-		LogDir:  ctx.AllocDir.LogDir(),
+		LogDir:  ctx.TaskDir.LogDir,
 		TaskDir: d.taskDir,
 		Task:    task,
 	}

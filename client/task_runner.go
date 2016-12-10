@@ -15,6 +15,7 @@ import (
 	"github.com/armon/go-metrics"
 	"github.com/hashicorp/consul-template/signals"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/driver"
 	"github.com/hashicorp/nomad/client/getter"
@@ -57,7 +58,6 @@ type TaskRunner struct {
 	config         *config.Config
 	updater        TaskStateUpdater
 	logger         *log.Logger
-	ctx            *driver.ExecContext
 	alloc          *structs.Allocation
 	restartTracker *RestartTracker
 
@@ -69,7 +69,7 @@ type TaskRunner struct {
 	resourceUsageLock sync.RWMutex
 
 	task    *structs.Task
-	taskDir string
+	taskDir *allocdir.TaskDir
 
 	// taskEnv is the environment variables of the task
 	taskEnv     *env.TaskEnvironment
@@ -148,7 +148,7 @@ type SignalEvent struct {
 
 // NewTaskRunner is used to create a new task context
 func NewTaskRunner(logger *log.Logger, config *config.Config,
-	updater TaskStateUpdater, ctx *driver.ExecContext,
+	updater TaskStateUpdater, taskdir *allocdir.TaskDir,
 	alloc *structs.Allocation, task *structs.Task,
 	vaultClient vaultclient.VaultClient) *TaskRunner {
 
@@ -163,19 +163,11 @@ func NewTaskRunner(logger *log.Logger, config *config.Config,
 	}
 	restartTracker := newRestartTracker(tg.RestartPolicy, alloc.Job.Type)
 
-	// Get the task directory
-	taskDir, ok := ctx.AllocDir.TaskDirs[task.Name]
-	if !ok {
-		logger.Printf("[ERR] client: task directory for alloc %q task %q couldn't be found", alloc.ID, task.Name)
-		return nil
-	}
-
 	tc := &TaskRunner{
 		config:         config,
 		updater:        updater,
 		logger:         logger,
 		restartTracker: restartTracker,
-		ctx:            ctx,
 		alloc:          alloc,
 		task:           task,
 		taskDir:        taskDir,
@@ -238,13 +230,8 @@ func (r *TaskRunner) RestoreState() error {
 	}
 
 	if r.task.Vault != nil {
-		secretDir, err := r.ctx.AllocDir.GetSecretDir(r.task.Name)
-		if err != nil {
-			return fmt.Errorf("failed to determine task %s secret dir in alloc %q: %v", r.task.Name, r.alloc.ID, err)
-		}
-
 		// Read the token from the secret directory
-		tokenPath := filepath.Join(secretDir, vaultTokenFile)
+		tokenPath := filepath.Join(r.taskDir.SecretsDir, vaultTokenFile)
 		data, err := ioutil.ReadFile(tokenPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -644,14 +631,7 @@ func (r *TaskRunner) deriveVaultToken() (token string, exit bool) {
 
 // writeToken writes the given token to disk
 func (r *TaskRunner) writeToken(token string) error {
-	// Write the token to disk
-	secretDir, err := r.ctx.AllocDir.GetSecretDir(r.task.Name)
-	if err != nil {
-		return fmt.Errorf("failed to determine task %s secret dir in alloc %q: %v", r.task.Name, r.alloc.ID, err)
-	}
-
-	// Write the token to the file system
-	tokenPath := filepath.Join(secretDir, vaultTokenFile)
+	tokenPath := filepath.Join(r.taskDir.SecretsDir, vaultTokenFile)
 	if err := ioutil.WriteFile(tokenPath, []byte(token), 0777); err != nil {
 		return fmt.Errorf("failed to save Vault tokens to secret dir for task %q in alloc %q: %v", r.task.Name, r.alloc.ID, err)
 	}
@@ -677,7 +657,7 @@ func (r *TaskRunner) updatedTokenHandler() {
 		// Create a new templateManager
 		var err error
 		r.templateManager, err = NewTaskTemplateManager(r, r.task.Templates,
-			r.config, r.vaultFuture.Get(), r.taskDir, r.getTaskEnv())
+			r.config, r.vaultFuture.Get(), r.taskDir.Dir, r.getTaskEnv())
 		if err != nil {
 			err := fmt.Errorf("failed to build task's template manager: %v", err)
 			r.setState(structs.TaskStateDead, structs.NewTaskEvent(structs.TaskSetupFailure).SetSetupError(err).SetFailsTask())
@@ -717,7 +697,7 @@ func (r *TaskRunner) prestart(resultCh chan bool) {
 		if !r.artifactsDownloaded && len(r.task.Artifacts) > 0 {
 			r.setState(structs.TaskStatePending, structs.NewTaskEvent(structs.TaskDownloadingArtifacts))
 			for _, artifact := range r.task.Artifacts {
-				if err := getter.GetArtifact(r.getTaskEnv(), artifact, r.taskDir); err != nil {
+				if err := getter.GetArtifact(r.getTaskEnv(), artifact, r.taskDir.Dir); err != nil {
 					wrapped := fmt.Errorf("failed to download artifact %q: %v", artifact.GetterSource, err)
 					r.setState(structs.TaskStatePending,
 						structs.NewTaskEvent(structs.TaskArtifactDownloadFailed).SetDownloadError(wrapped))
@@ -745,7 +725,7 @@ func (r *TaskRunner) prestart(resultCh chan bool) {
 		if r.templateManager == nil {
 			var err error
 			r.templateManager, err = NewTaskTemplateManager(r, r.task.Templates,
-				r.config, r.vaultFuture.Get(), r.taskDir, r.getTaskEnv())
+				r.config, r.vaultFuture.Get(), r.taskDir.Dir, r.getTaskEnv())
 			if err != nil {
 				err := fmt.Errorf("failed to build task's template manager: %v", err)
 				r.setState(structs.TaskStateDead, structs.NewTaskEvent(structs.TaskSetupFailure).SetSetupError(err).SetFailsTask())
@@ -1029,6 +1009,34 @@ func (r *TaskRunner) startTask() error {
 	if err != nil {
 		return fmt.Errorf("failed to create driver of task %q for alloc %q: %v",
 			r.task.Name, r.alloc.ID, err)
+	}
+
+	abilities := driver.Abilities()
+
+	// Build base task directory structure regardless of FS isolation abilities
+	if err := r.taskdir.Build(); err != nil {
+		return err
+	}
+
+	// Build the chroot for drivers with that ability
+	if abilities.FSIsolation == driver.FSIsolationChroot {
+		chroot := config.DefaultChrootEnv
+		if len(r.config.ChrootEnv) > 0 {
+			chroot = e.config.ChrootEnv
+		}
+
+		if err := r.taskDir.BuildChroot(chroot); err != nil {
+			return fmt.Errorf("failed to build chroot for task %q for alloc %q: %v",
+				r.task.Name, r.alloc.ID, err)
+		}
+	}
+
+	// Both no-fs-isolation and chroot-isolation expect the shared alloc
+	// dir to be mounted inside the task dir
+	if abilities.FSIsolation == driver.FSIsolationNone || abilities.FSIsolation == driver.FSIsolationChroot {
+		if err := r.taskDir.MountSharedDir(); err != nil {
+			return err
+		}
 	}
 
 	// Run prestart

@@ -23,8 +23,12 @@ var (
 	// Name of the directory where logs of Tasks are written
 	LogDirName = "logs"
 
+	// SharedDataDir is one of the shared allocation directories. It is
+	// included in snapshots.
+	SharedDataDir = "data"
+
 	// The set of directories that exist inside eache shared alloc directory.
-	SharedAllocDirs = []string{LogDirName, "tmp", "data"}
+	SharedAllocDirs = []string{LogDirName, "tmp", SharedDataDir}
 
 	// The name of the directory that exists inside each task directory
 	// regardless of driver.
@@ -36,6 +40,12 @@ var (
 
 	// TaskDirs is the set of directories created in each tasks directory.
 	TaskDirs = []string{"tmp"}
+
+	// chrootDrivers are drivers that require a chroot be built.
+	chrootDrivers = map[string]bool{
+		"exec": true,
+		"java": true,
+	}
 )
 
 type AllocDir struct {
@@ -48,7 +58,7 @@ type AllocDir struct {
 	SharedDir string
 
 	// TaskDirs is a mapping of task names to their non-shared directory.
-	TaskDirs map[string]string
+	TaskDirs map[string]*TaskDir
 }
 
 // AllocFileInfo holds information about a file inside the AllocDir
@@ -75,7 +85,7 @@ type AllocDirFS interface {
 func NewAllocDir(allocDir string) *AllocDir {
 	d := &AllocDir{
 		AllocDir: allocDir,
-		TaskDirs: make(map[string]string),
+		TaskDirs: make(map[string]*TaskDir),
 	}
 	d.SharedDir = filepath.Join(d.AllocDir, SharedAllocName)
 	return d
@@ -84,11 +94,10 @@ func NewAllocDir(allocDir string) *AllocDir {
 // Snapshot creates an archive of the files and directories in the data dir of
 // the allocation and the task local directories
 func (d *AllocDir) Snapshot(w io.Writer) error {
-	allocDataDir := filepath.Join(d.SharedDir, "data")
+	allocDataDir := filepath.Join(d.SharedDir, SharedDataDir)
 	rootPaths := []string{allocDataDir}
-	for _, path := range d.TaskDirs {
-		taskLocaPath := filepath.Join(path, "local")
-		rootPaths = append(rootPaths, taskLocaPath)
+	for _, taskdir := range d.TaskDirs {
+		rootPaths = append(rootPaths, taskdir.LocalDir)
 	}
 
 	tw := tar.NewWriter(w)
@@ -145,8 +154,8 @@ func (d *AllocDir) Snapshot(w io.Writer) error {
 // Move moves the shared data and task local dirs
 func (d *AllocDir) Move(other *AllocDir, tasks []*structs.Task) error {
 	// Move the data directory
-	otherDataDir := filepath.Join(other.SharedDir, "data")
-	dataDir := filepath.Join(d.SharedDir, "data")
+	otherDataDir := filepath.Join(other.SharedDir, SharedDataDir)
+	dataDir := filepath.Join(d.SharedDir, SharedDataDir)
 	if fileInfo, err := os.Stat(otherDataDir); fileInfo != nil && err == nil {
 		if err := os.Rename(otherDataDir, dataDir); err != nil {
 			return fmt.Errorf("error moving data dir: %v", err)
@@ -160,7 +169,7 @@ func (d *AllocDir) Move(other *AllocDir, tasks []*structs.Task) error {
 
 		if fileInfo, err := os.Stat(otherTaskLocal); fileInfo != nil && err == nil {
 			if taskDir, ok := d.TaskDirs[task.Name]; ok {
-				if err := os.Rename(otherTaskLocal, filepath.Join(taskDir, TaskLocal)); err != nil {
+				if err := os.Rename(otherTaskLocal, taskDir.LocalDir); err != nil {
 					return fmt.Errorf("error moving task local dir: %v", err)
 				}
 			}
@@ -190,34 +199,33 @@ func (d *AllocDir) UnmountAll() error {
 	var mErr multierror.Error
 	for _, dir := range d.TaskDirs {
 		// Check if the directory has the shared alloc mounted.
-		taskAlloc := filepath.Join(dir, SharedAllocName)
-		if d.pathExists(taskAlloc) {
-			if err := d.unmountSharedDir(taskAlloc); err != nil {
+		if pathExists(dir.SharedTaskDir) {
+			if err := unlinkDir(dir.SharedTaskDir); err != nil {
 				mErr.Errors = append(mErr.Errors,
-					fmt.Errorf("failed to unmount shared alloc dir %q: %v", taskAlloc, err))
-			} else if err := os.RemoveAll(taskAlloc); err != nil {
+					fmt.Errorf("failed to unmount shared alloc dir %q: %v", dir.SharedTaskDir, err))
+			} else if err := os.RemoveAll(dir.SharedTaskDir); err != nil {
 				mErr.Errors = append(mErr.Errors,
-					fmt.Errorf("failed to delete shared alloc dir %q: %v", taskAlloc, err))
+					fmt.Errorf("failed to delete shared alloc dir %q: %v", dir.SharedTaskDir, err))
 			}
 		}
 
-		taskSecret := filepath.Join(dir, TaskSecrets)
-		if d.pathExists(taskSecret) {
-			if err := d.removeSecretDir(taskSecret); err != nil {
+		if pathExists(dir.SecretsDir) {
+			if err := removeSecretDir(dir.SecretsDir); err != nil {
 				mErr.Errors = append(mErr.Errors,
-					fmt.Errorf("failed to remove the secret dir %q: %v", taskSecret, err))
+					fmt.Errorf("failed to remove the secret dir %q: %v", dir.SecretsDir, err))
 			}
 		}
 
-		// Unmount dev/ and proc/ have been mounted.
-		d.unmountSpecialDirs(dir)
+		// Unmount dev/ and proc/ have been mounted. Make a best effort
+		// and ignore errors.
+		dir.unmountSpecialDirs()
 	}
 
 	return mErr.ErrorOrNil()
 }
 
-// Given a list of a task build the correct alloc structure.
-func (d *AllocDir) Build(tasks []*structs.Task) error {
+// Build the directory tree for an allocation.
+func (d *AllocDir) Build() error {
 	// Make the alloc directory, owned by the nomad process.
 	if err := os.MkdirAll(d.AllocDir, 0755); err != nil {
 		return fmt.Errorf("Failed to make the alloc directory %v: %v", d.AllocDir, err)
@@ -229,184 +237,22 @@ func (d *AllocDir) Build(tasks []*structs.Task) error {
 	}
 
 	// Make the shared directory have non-root permissions.
-	if err := d.dropDirPermissions(d.SharedDir); err != nil {
+	if err := dropDirPermissions(d.SharedDir); err != nil {
 		return err
 	}
 
+	// Create shared subdirs
 	for _, dir := range SharedAllocDirs {
 		p := filepath.Join(d.SharedDir, dir)
 		if err := os.MkdirAll(p, 0777); err != nil {
 			return err
 		}
-		if err := d.dropDirPermissions(p); err != nil {
-			return err
-		}
-	}
-
-	// Make the task directories.
-	for _, t := range tasks {
-		taskDir := filepath.Join(d.AllocDir, t.Name)
-		if err := os.MkdirAll(taskDir, 0777); err != nil {
-			return err
-		}
-
-		// Make the task directory have non-root permissions.
-		if err := d.dropDirPermissions(taskDir); err != nil {
-			return err
-		}
-
-		// Create a local directory that each task can use.
-		local := filepath.Join(taskDir, TaskLocal)
-		if err := os.MkdirAll(local, 0777); err != nil {
-			return err
-		}
-
-		if err := d.dropDirPermissions(local); err != nil {
-			return err
-		}
-
-		d.TaskDirs[t.Name] = taskDir
-
-		// Create the directories that should be in every task.
-		for _, dir := range TaskDirs {
-			local := filepath.Join(taskDir, dir)
-			if err := os.MkdirAll(local, 0777); err != nil {
-				return err
-			}
-
-			if err := d.dropDirPermissions(local); err != nil {
-				return err
-			}
-		}
-
-		// Create the secret directory
-		secret := filepath.Join(taskDir, TaskSecrets)
-		if err := d.createSecretDir(secret); err != nil {
-			return err
-		}
-
-		if err := d.dropDirPermissions(secret); err != nil {
+		if err := dropDirPermissions(p); err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-// Embed takes a mapping of absolute directory or file paths on the host to
-// their intended, relative location within the task directory. Embed attempts
-// hardlink and then defaults to copying. If the path exists on the host and
-// can't be embedded an error is returned.
-func (d *AllocDir) Embed(task string, entries map[string]string) error {
-	taskdir, ok := d.TaskDirs[task]
-	if !ok {
-		return fmt.Errorf("Task directory doesn't exist for task %v", task)
-	}
-
-	subdirs := make(map[string]string)
-	for source, dest := range entries {
-		// Check to see if directory exists on host.
-		s, err := os.Stat(source)
-		if os.IsNotExist(err) {
-			continue
-		}
-
-		// Embedding a single file
-		if !s.IsDir() {
-			if err := d.createDir(taskdir, filepath.Dir(dest)); err != nil {
-				return fmt.Errorf("Couldn't create destination directory %v: %v", dest, err)
-			}
-
-			// Copy the file.
-			taskEntry := filepath.Join(taskdir, dest)
-			if err := d.linkOrCopy(source, taskEntry, s.Mode().Perm()); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		// Create destination directory.
-		destDir := filepath.Join(taskdir, dest)
-
-		if err := d.createDir(taskdir, dest); err != nil {
-			return fmt.Errorf("Couldn't create destination directory %v: %v", destDir, err)
-		}
-
-		// Enumerate the files in source.
-		dirEntries, err := ioutil.ReadDir(source)
-		if err != nil {
-			return fmt.Errorf("Couldn't read directory %v: %v", source, err)
-		}
-
-		for _, entry := range dirEntries {
-			hostEntry := filepath.Join(source, entry.Name())
-			taskEntry := filepath.Join(destDir, filepath.Base(hostEntry))
-			if entry.IsDir() {
-				subdirs[hostEntry] = filepath.Join(dest, filepath.Base(hostEntry))
-				continue
-			}
-
-			// Check if entry exists. This can happen if restarting a failed
-			// task.
-			if _, err := os.Lstat(taskEntry); err == nil {
-				continue
-			}
-
-			if !entry.Mode().IsRegular() {
-				// If it is a symlink we can create it, otherwise we skip it.
-				if entry.Mode()&os.ModeSymlink == 0 {
-					continue
-				}
-
-				link, err := os.Readlink(hostEntry)
-				if err != nil {
-					return fmt.Errorf("Couldn't resolve symlink for %v: %v", source, err)
-				}
-
-				if err := os.Symlink(link, taskEntry); err != nil {
-					// Symlinking twice
-					if err.(*os.LinkError).Err.Error() != "file exists" {
-						return fmt.Errorf("Couldn't create symlink: %v", err)
-					}
-				}
-				continue
-			}
-
-			if err := d.linkOrCopy(hostEntry, taskEntry, entry.Mode().Perm()); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Recurse on self to copy subdirectories.
-	if len(subdirs) != 0 {
-		return d.Embed(task, subdirs)
-	}
-
-	return nil
-}
-
-// MountSharedDir mounts the shared directory into the specified task's
-// directory. Mount is documented at an OS level in their respective
-// implementation files.
-func (d *AllocDir) MountSharedDir(task string) error {
-	taskDir, ok := d.TaskDirs[task]
-	if !ok {
-		return fmt.Errorf("No task directory exists for %v", task)
-	}
-
-	taskLoc := filepath.Join(taskDir, SharedAllocName)
-	if err := d.mountSharedDir(taskLoc); err != nil {
-		return fmt.Errorf("Failed to mount shared directory for task %v: %v", task, err)
-	}
-
-	return nil
-}
-
-// LogDir returns the log dir in the current allocation directory
-func (d *AllocDir) LogDir() string {
-	return filepath.Join(d.AllocDir, SharedAllocName, LogDirName)
 }
 
 // List returns the list of files at a path relative to the alloc dir
@@ -470,8 +316,7 @@ func (d *AllocDir) ReadAt(path string, offset int64) (io.ReadCloser, error) {
 
 	// Check if it is trying to read into a secret directory
 	for _, dir := range d.TaskDirs {
-		sdir := filepath.Join(dir, TaskSecrets)
-		if filepath.HasPrefix(p, sdir) {
+		if filepath.HasPrefix(p, dir.SecretsDir) {
 			return nil, fmt.Errorf("Reading secret file prohibited: %s", path)
 		}
 	}
@@ -549,7 +394,7 @@ func fileCopy(src, dst string, perm os.FileMode) error {
 }
 
 // pathExists is a helper function to check if the path exists.
-func (d *AllocDir) pathExists(path string) bool {
+func pathExists(path string) bool {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return false
@@ -558,19 +403,11 @@ func (d *AllocDir) pathExists(path string) bool {
 	return true
 }
 
-func (d *AllocDir) GetSecretDir(task string) (string, error) {
-	if t, ok := d.TaskDirs[task]; !ok {
-		return "", fmt.Errorf("Allocation directory doesn't contain task %q", task)
-	} else {
-		return filepath.Join(t, TaskSecrets), nil
-	}
-}
-
 // createDir creates a directory structure inside the basepath. This functions
 // preserves the permissions of each of the subdirectories in the relative path
 // by looking up the permissions in the host.
-func (d *AllocDir) createDir(basePath, relPath string) error {
-	filePerms, err := d.splitPath(relPath)
+func createDir(basePath, relPath string) error {
+	filePerms, err := splitPath(relPath)
 	if err != nil {
 		return err
 	}
@@ -596,7 +433,7 @@ type fileInfo struct {
 // splitPath stats each subdirectory of a path. The first element of the array
 // is the file passed to this method, and the last element is the root of the
 // path.
-func (d *AllocDir) splitPath(path string) ([]fileInfo, error) {
+func splitPath(path string) ([]fileInfo, error) {
 	var mode os.FileMode
 	i, err := os.Stat(path)
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/config"
@@ -72,6 +71,38 @@ type Driver interface {
 type DriverAbilities struct {
 	// SendSignals marks the driver as being able to send signals
 	SendSignals bool
+
+	// FSIsolation is the filesystem isolation provided by the driver.
+	FSIsolation FSIsolation
+}
+
+// FSIsolation is an enumeration to describe what kind of filesystem isolation
+// a driver supports.
+type FSIsolation int
+
+const (
+	// FSIsolationNone means no isolation. The host filesystem is used.
+	FSIsolationNone FSIsolation = 0
+
+	// FSIsolationChroot means the driver will use a chroot on the host
+	// filesystem.
+	FSIsolationChroot FSIsolation = 1
+
+	// FSIsolationImage means the driver uses an image.
+	FSIsolationImage FSIsolation = 2
+)
+
+func (f FSIsolation) String() string {
+	switch f {
+	case 0:
+		return "none"
+	case 1:
+		return "chroot"
+	case 2:
+		return "image"
+	default:
+		return "INVALID"
+	}
 }
 
 // LogEventFn is a callback which allows Drivers to emit task events.
@@ -137,16 +168,16 @@ type DriverHandle interface {
 
 // ExecContext is shared between drivers within an allocation
 type ExecContext struct {
-	// AllocDir contains information about the alloc directory structure.
-	AllocDir *allocdir.AllocDir
+	// TaskDir contains information about the task directory structure.
+	TaskDir *allocdir.TaskDir
 
 	// Alloc ID
 	AllocID string
 }
 
 // NewExecContext is used to create a new execution context
-func NewExecContext(alloc *allocdir.AllocDir, allocID string) *ExecContext {
-	return &ExecContext{AllocDir: alloc, AllocID: allocID}
+func NewExecContext(td *allocdir.TaskDir, allocID string) *ExecContext {
+	return &ExecContext{TaskDir: td, AllocID: allocID}
 }
 
 // GetTaskEnv converts the alloc dir, the node, task and alloc into a
@@ -170,8 +201,8 @@ func GetTaskEnv(allocDir *allocdir.AllocDir, node *structs.Node,
 			return nil, fmt.Errorf("failed to get task directory for task %q", task.Name)
 		}
 
-		env.SetTaskLocalDir(filepath.Join(taskdir, allocdir.TaskLocal))
-		env.SetSecretsDir(filepath.Join(taskdir, allocdir.TaskSecrets))
+		env.SetTaskLocalDir(taskdir.LocalDir)
+		env.SetSecretsDir(taskdir.SecretsDir)
 	}
 
 	if task.Resources != nil {
