@@ -170,7 +170,6 @@ func (d *ExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		pluginClient:    pluginClient,
 		userPid:         ps.Pid,
 		executor:        exec,
-		taskDir:         ctx.TaskDir,
 		isolationConfig: ps.IsolationConfig,
 		killTimeout:     GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout:  maxKill,
@@ -191,7 +190,6 @@ type execId struct {
 	KillTimeout     time.Duration
 	MaxKillTimeout  time.Duration
 	UserPid         int
-	TaskDir         *allocdir.TaskDir
 	IsolationConfig *dstructs.IsolationConfig
 	PluginConfig    *PluginReattachConfig
 }
@@ -219,9 +217,6 @@ func (d *ExecDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 				merrs.Errors = append(merrs.Errors, fmt.Errorf("destroying cgroup failed: %v", e))
 			}
 		}
-		if e := ctx.AllocDir.UnmountAll(); e != nil {
-			merrs.Errors = append(merrs.Errors, e)
-		}
 		return nil, fmt.Errorf("error connecting to plugin: %v", merrs.ErrorOrNil())
 	}
 
@@ -232,7 +227,6 @@ func (d *ExecDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 		pluginClient:    client,
 		executor:        exec,
 		userPid:         id.UserPid,
-		taskDir:         id.TaskDir,
 		isolationConfig: id.IsolationConfig,
 		logger:          d.logger,
 		version:         id.Version,
@@ -255,7 +249,6 @@ func (h *execHandle) ID() string {
 		MaxKillTimeout:  h.maxKillTimeout,
 		PluginConfig:    NewPluginReattachConfig(h.pluginClient.ReattachConfig()),
 		UserPid:         h.userPid,
-		TaskDir:         h.taskDir,
 		IsolationConfig: h.isolationConfig,
 	}
 

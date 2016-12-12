@@ -17,7 +17,6 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/mitchellh/mapstructure"
 
-	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/driver/executor"
 	dstructs "github.com/hashicorp/nomad/client/driver/structs"
@@ -54,7 +53,6 @@ type javaHandle struct {
 	executor        executor.Executor
 	isolationConfig *dstructs.IsolationConfig
 
-	taskDir        *allocdir.TaskDir
 	killTimeout    time.Duration
 	maxKillTimeout time.Duration
 	version        string
@@ -245,7 +243,6 @@ func (d *JavaDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		executor:        execIntf,
 		userPid:         ps.Pid,
 		isolationConfig: ps.IsolationConfig,
-		taskDir:         ctx.TaskDir,
 		killTimeout:     GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout:  maxKill,
 		version:         d.config.Version,
@@ -273,7 +270,6 @@ type javaId struct {
 	MaxKillTimeout  time.Duration
 	PluginConfig    *PluginReattachConfig
 	IsolationConfig *dstructs.IsolationConfig
-	TaskDir         *allocdir.TaskDir
 	UserPid         int
 }
 
@@ -313,7 +309,6 @@ func (d *JavaDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 		executor:        exec,
 		userPid:         id.UserPid,
 		isolationConfig: id.IsolationConfig,
-		taskDir:         id.TaskDir,
 		logger:          d.logger,
 		version:         id.Version,
 		killTimeout:     id.KillTimeout,
@@ -336,7 +331,6 @@ func (h *javaHandle) ID() string {
 		MaxKillTimeout:  h.maxKillTimeout,
 		PluginConfig:    NewPluginReattachConfig(h.pluginClient.ReattachConfig()),
 		UserPid:         h.userPid,
-		TaskDir:         h.taskDir,
 		IsolationConfig: h.isolationConfig,
 	}
 
@@ -403,9 +397,6 @@ func (h *javaHandle) run() {
 			if e := killProcess(h.userPid); e != nil {
 				h.logger.Printf("[ERR] driver.java: error killing user process: %v", e)
 			}
-		}
-		if e := h.allocDir.UnmountAll(); e != nil {
-			h.logger.Printf("[ERR] driver.java: unmounting dev,proc and alloc dirs failed: %v", e)
 		}
 	}
 

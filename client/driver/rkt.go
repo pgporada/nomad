@@ -80,7 +80,6 @@ type rktHandle struct {
 	pluginClient   *plugin.Client
 	executorPid    int
 	executor       executor.Executor
-	taskDir        *allocdir.TaskDir
 	logger         *log.Logger
 	killTimeout    time.Duration
 	maxKillTimeout time.Duration
@@ -92,7 +91,6 @@ type rktHandle struct {
 // disk
 type rktPID struct {
 	PluginConfig   *PluginReattachConfig
-	TaskDir        *allocdir.TaskDir
 	ExecutorPid    int
 	KillTimeout    time.Duration
 	MaxKillTimeout time.Duration
@@ -224,9 +222,6 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 
 	// ACI image
 	img := driverConfig.ImageName
-
-	// Get the tasks local directory.
-	taskName := d.DriverContext.taskName
 
 	// Build the command.
 	var cmdArgs []string
@@ -445,7 +440,6 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 		pluginClient:   pluginClient,
 		executor:       execIntf,
 		executorPid:    ps.Pid,
-		taskDir:        ctx.TaskDir,
 		logger:         d.logger,
 		killTimeout:    GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout: maxKill,
@@ -485,7 +479,6 @@ func (d *RktDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, error
 	h := &rktHandle{
 		pluginClient:   pluginClient,
 		executorPid:    id.ExecutorPid,
-		taskDir:        id.TaskDir,
 		executor:       exec,
 		logger:         d.logger,
 		killTimeout:    id.KillTimeout,
@@ -507,7 +500,6 @@ func (h *rktHandle) ID() string {
 		KillTimeout:    h.killTimeout,
 		MaxKillTimeout: h.maxKillTimeout,
 		ExecutorPid:    h.executorPid,
-		TaskDir:        h.taskDir,
 	}
 	data, err := json.Marshal(pid)
 	if err != nil {
@@ -555,9 +547,6 @@ func (h *rktHandle) run() {
 	if ps.ExitCode == 0 && werr != nil {
 		if e := killProcess(h.executorPid); e != nil {
 			h.logger.Printf("[ERROR] driver.rkt: error killing user process: %v", e)
-		}
-		if e := h.allocDir.UnmountAll(); e != nil {
-			h.logger.Printf("[ERROR] driver.rkt: unmounting dev,proc and alloc dirs failed: %v", e)
 		}
 	}
 	// Remove services
