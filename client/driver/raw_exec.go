@@ -48,7 +48,7 @@ type rawExecHandle struct {
 	executor       executor.Executor
 	killTimeout    time.Duration
 	maxKillTimeout time.Duration
-	allocDir       *allocdir.AllocDir
+	taskDir        *allocdir.TaskDir
 	logger         *log.Logger
 	waitCh         chan *dstructs.WaitResult
 	doneCh         chan struct{}
@@ -121,10 +121,6 @@ func (d *RawExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandl
 	}
 	// Get the tasks local directory.
 	taskName := d.DriverContext.taskName
-	taskDir, ok := ctx.AllocDir.TaskDirs[taskName]
-	if !ok {
-		return nil, fmt.Errorf("Could not find task directory for task: %v", d.DriverContext.taskName)
-	}
 
 	// Get the command to be ran
 	command := driverConfig.Command
@@ -136,7 +132,7 @@ func (d *RawExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandl
 	if err != nil {
 		return nil, fmt.Errorf("unable to find the nomad binary: %v", err)
 	}
-	pluginLogFile := filepath.Join(taskDir.Dir, fmt.Sprintf("%s-executor.out", taskName))
+	pluginLogFile := filepath.Join(ctx.TaskDir.Dir, fmt.Sprintf("%s-executor.out", taskName))
 	pluginConfig := &plugin.ClientConfig{
 		Cmd: exec.Command(bin, "executor", pluginLogFile),
 	}
@@ -176,7 +172,7 @@ func (d *RawExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandl
 		userPid:        ps.Pid,
 		killTimeout:    GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout: maxKill,
-		allocDir:       ctx.AllocDir,
+		taskDir:        ctx.TaskDir,
 		version:        d.config.Version,
 		logger:         d.logger,
 		doneCh:         make(chan struct{}),
@@ -195,7 +191,7 @@ type rawExecId struct {
 	MaxKillTimeout time.Duration
 	UserPid        int
 	PluginConfig   *PluginReattachConfig
-	AllocDir       *allocdir.AllocDir
+	TaskDir        *allocdir.TaskDir
 }
 
 func (d *RawExecDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, error) {
@@ -227,7 +223,7 @@ func (d *RawExecDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, e
 		logger:         d.logger,
 		killTimeout:    id.KillTimeout,
 		maxKillTimeout: id.MaxKillTimeout,
-		allocDir:       id.AllocDir,
+		taskDir:        id.TaskDir,
 		version:        id.Version,
 		doneCh:         make(chan struct{}),
 		waitCh:         make(chan *dstructs.WaitResult, 1),
@@ -246,7 +242,7 @@ func (h *rawExecHandle) ID() string {
 		MaxKillTimeout: h.maxKillTimeout,
 		PluginConfig:   NewPluginReattachConfig(h.pluginClient.ReattachConfig()),
 		UserPid:        h.userPid,
-		AllocDir:       h.allocDir,
+		TaskDir:        h.taskDir,
 	}
 
 	data, err := json.Marshal(id)

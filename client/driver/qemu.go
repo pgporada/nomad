@@ -55,7 +55,7 @@ type qemuHandle struct {
 	pluginClient   *plugin.Client
 	userPid        int
 	executor       executor.Executor
-	allocDir       *allocdir.AllocDir
+	taskDir        *allocdir.TaskDir
 	killTimeout    time.Duration
 	maxKillTimeout time.Duration
 	logger         *log.Logger
@@ -158,12 +158,6 @@ func (d *QemuDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 	}
 	vmID := filepath.Base(vmPath)
 
-	// Get the tasks local directory.
-	taskDir, ok := ctx.AllocDir.TaskDirs[d.DriverContext.taskName]
-	if !ok {
-		return nil, fmt.Errorf("Could not find task directory for task: %v", d.DriverContext.taskName)
-	}
-
 	// Parse configuration arguments
 	// Create the base arguments
 	accelerator := "tcg"
@@ -242,7 +236,7 @@ func (d *QemuDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		return nil, fmt.Errorf("unable to find the nomad binary: %v", err)
 	}
 
-	pluginLogFile := filepath.Join(taskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
+	pluginLogFile := filepath.Join(ctx.TaskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
 	pluginConfig := &plugin.ClientConfig{
 		Cmd: exec.Command(bin, "executor", pluginLogFile),
 	}
@@ -280,7 +274,7 @@ func (d *QemuDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		pluginClient:   pluginClient,
 		executor:       exec,
 		userPid:        ps.Pid,
-		allocDir:       ctx.AllocDir,
+		taskDir:        ctx.TaskDir,
 		killTimeout:    GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout: maxKill,
 		version:        d.config.Version,
@@ -302,7 +296,7 @@ type qemuId struct {
 	MaxKillTimeout time.Duration
 	UserPid        int
 	PluginConfig   *PluginReattachConfig
-	AllocDir       *allocdir.AllocDir
+	TaskDir        *allocdir.TaskDir
 }
 
 func (d *QemuDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, error) {
@@ -331,7 +325,7 @@ func (d *QemuDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 		pluginClient:   pluginClient,
 		executor:       exec,
 		userPid:        id.UserPid,
-		allocDir:       id.AllocDir,
+		taskDir:        id.TaskDir,
 		logger:         d.logger,
 		killTimeout:    id.KillTimeout,
 		maxKillTimeout: id.MaxKillTimeout,
@@ -353,7 +347,7 @@ func (h *qemuHandle) ID() string {
 		MaxKillTimeout: h.maxKillTimeout,
 		PluginConfig:   NewPluginReattachConfig(h.pluginClient.ReattachConfig()),
 		UserPid:        h.userPid,
-		AllocDir:       h.allocDir,
+		TaskDir:        h.taskDir,
 	}
 
 	data, err := json.Marshal(id)

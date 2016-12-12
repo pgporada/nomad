@@ -80,7 +80,7 @@ type rktHandle struct {
 	pluginClient   *plugin.Client
 	executorPid    int
 	executor       executor.Executor
-	allocDir       *allocdir.AllocDir
+	taskDir        *allocdir.TaskDir
 	logger         *log.Logger
 	killTimeout    time.Duration
 	maxKillTimeout time.Duration
@@ -92,7 +92,7 @@ type rktHandle struct {
 // disk
 type rktPID struct {
 	PluginConfig   *PluginReattachConfig
-	AllocDir       *allocdir.AllocDir
+	TaskDir        *allocdir.TaskDir
 	ExecutorPid    int
 	KillTimeout    time.Duration
 	MaxKillTimeout time.Duration
@@ -227,10 +227,6 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 
 	// Get the tasks local directory.
 	taskName := d.DriverContext.taskName
-	taskDir, ok := ctx.AllocDir.TaskDirs[taskName]
-	if !ok {
-		return nil, fmt.Errorf("Could not find task directory for task: %v", d.DriverContext.taskName)
-	}
 
 	// Build the command.
 	var cmdArgs []string
@@ -259,17 +255,17 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 
 	// Mount /alloc
 	allocVolName := fmt.Sprintf("%s-%s-alloc", ctx.AllocID, task.Name)
-	cmdArgs = append(cmdArgs, fmt.Sprintf("--volume=%s,kind=host,source=%s", allocVolName, ctx.AllocDir.SharedDir))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("--volume=%s,kind=host,source=%s", allocVolName, ctx.TaskDir.SharedAllocDir))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("--mount=volume=%s,target=%s", allocVolName, allocdir.SharedAllocContainerPath))
 
 	// Mount /local
 	localVolName := fmt.Sprintf("%s-%s-local", ctx.AllocID, task.Name)
-	cmdArgs = append(cmdArgs, fmt.Sprintf("--volume=%s,kind=host,source=%s", localVolName, taskDir.LocalDir))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("--volume=%s,kind=host,source=%s", localVolName, ctx.TaskDir.LocalDir))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("--mount=volume=%s,target=%s", localVolName, allocdir.TaskLocalContainerPath))
 
 	// Mount /secrets
 	secretsVolName := fmt.Sprintf("%s-%s-secrets", ctx.AllocID, task.Name)
-	cmdArgs = append(cmdArgs, fmt.Sprintf("--volume=%s,kind=host,source=%s", secretsVolName, taskDir.SecretsDir))
+	cmdArgs = append(cmdArgs, fmt.Sprintf("--volume=%s,kind=host,source=%s", secretsVolName, ctx.TaskDir.SecretsDir))
 	cmdArgs = append(cmdArgs, fmt.Sprintf("--mount=volume=%s,target=%s", secretsVolName, allocdir.TaskSecretsContainerPath))
 
 	// Mount arbitrary volumes if enabled
@@ -407,7 +403,7 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 		return nil, fmt.Errorf("unable to find the nomad binary: %v", err)
 	}
 
-	pluginLogFile := filepath.Join(taskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
+	pluginLogFile := filepath.Join(ctx.TaskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
 	pluginConfig := &plugin.ClientConfig{
 		Cmd: exec.Command(bin, "executor", pluginLogFile),
 	}
@@ -449,7 +445,7 @@ func (d *RktDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, e
 		pluginClient:   pluginClient,
 		executor:       execIntf,
 		executorPid:    ps.Pid,
-		allocDir:       ctx.AllocDir,
+		taskDir:        ctx.TaskDir,
 		logger:         d.logger,
 		killTimeout:    GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout: maxKill,
@@ -489,7 +485,7 @@ func (d *RktDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, error
 	h := &rktHandle{
 		pluginClient:   pluginClient,
 		executorPid:    id.ExecutorPid,
-		allocDir:       id.AllocDir,
+		taskDir:        id.TaskDir,
 		executor:       exec,
 		logger:         d.logger,
 		killTimeout:    id.KillTimeout,
@@ -511,7 +507,7 @@ func (h *rktHandle) ID() string {
 		KillTimeout:    h.killTimeout,
 		MaxKillTimeout: h.maxKillTimeout,
 		ExecutorPid:    h.executorPid,
-		AllocDir:       h.allocDir,
+		TaskDir:        h.taskDir,
 	}
 	data, err := json.Marshal(pid)
 	if err != nil {

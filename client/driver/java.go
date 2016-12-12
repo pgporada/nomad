@@ -54,8 +54,7 @@ type javaHandle struct {
 	executor        executor.Executor
 	isolationConfig *dstructs.IsolationConfig
 
-	taskDir        string
-	allocDir       *allocdir.AllocDir
+	taskDir        *allocdir.TaskDir
 	killTimeout    time.Duration
 	maxKillTimeout time.Duration
 	version        string
@@ -176,11 +175,6 @@ func (d *JavaDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		return nil, err
 	}
 
-	taskDir, ok := ctx.AllocDir.TaskDirs[d.DriverContext.taskName]
-	if !ok {
-		return nil, fmt.Errorf("Could not find task directory for task: %v", d.DriverContext.taskName)
-	}
-
 	if driverConfig.JarPath == "" {
 		return nil, fmt.Errorf("jar_path must be specified")
 	}
@@ -203,7 +197,7 @@ func (d *JavaDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		return nil, fmt.Errorf("unable to find the nomad binary: %v", err)
 	}
 
-	pluginLogFile := filepath.Join(taskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
+	pluginLogFile := filepath.Join(ctx.TaskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
 	pluginConfig := &plugin.ClientConfig{
 		Cmd: exec.Command(bin, "executor", pluginLogFile),
 	}
@@ -251,8 +245,7 @@ func (d *JavaDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		executor:        execIntf,
 		userPid:         ps.Pid,
 		isolationConfig: ps.IsolationConfig,
-		taskDir:         taskDir.Dir,
-		allocDir:        ctx.AllocDir,
+		taskDir:         ctx.TaskDir,
 		killTimeout:     GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout:  maxKill,
 		version:         d.config.Version,
@@ -280,8 +273,7 @@ type javaId struct {
 	MaxKillTimeout  time.Duration
 	PluginConfig    *PluginReattachConfig
 	IsolationConfig *dstructs.IsolationConfig
-	TaskDir         string
-	AllocDir        *allocdir.AllocDir
+	TaskDir         *allocdir.TaskDir
 	UserPid         int
 }
 
@@ -322,7 +314,6 @@ func (d *JavaDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 		userPid:         id.UserPid,
 		isolationConfig: id.IsolationConfig,
 		taskDir:         id.TaskDir,
-		allocDir:        id.AllocDir,
 		logger:          d.logger,
 		version:         id.Version,
 		killTimeout:     id.KillTimeout,
@@ -346,7 +337,6 @@ func (h *javaHandle) ID() string {
 		PluginConfig:    NewPluginReattachConfig(h.pluginClient.ReattachConfig()),
 		UserPid:         h.userPid,
 		TaskDir:         h.taskDir,
-		AllocDir:        h.allocDir,
 		IsolationConfig: h.isolationConfig,
 	}
 

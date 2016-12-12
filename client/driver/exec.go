@@ -50,7 +50,7 @@ type execHandle struct {
 	executor        executor.Executor
 	isolationConfig *dstructs.IsolationConfig
 	userPid         int
-	allocDir        *allocdir.AllocDir
+	taskDir         *allocdir.TaskDir
 	killTimeout     time.Duration
 	maxKillTimeout  time.Duration
 	logger          *log.Logger
@@ -170,7 +170,7 @@ func (d *ExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		pluginClient:    pluginClient,
 		userPid:         ps.Pid,
 		executor:        exec,
-		allocDir:        ctx.AllocDir,
+		taskDir:         ctx.TaskDir,
 		isolationConfig: ps.IsolationConfig,
 		killTimeout:     GetKillTimeout(task.KillTimeout, maxKill),
 		maxKillTimeout:  maxKill,
@@ -191,8 +191,7 @@ type execId struct {
 	KillTimeout     time.Duration
 	MaxKillTimeout  time.Duration
 	UserPid         int
-	TaskDir         string
-	AllocDir        *allocdir.AllocDir
+	TaskDir         *allocdir.TaskDir
 	IsolationConfig *dstructs.IsolationConfig
 	PluginConfig    *PluginReattachConfig
 }
@@ -233,7 +232,7 @@ func (d *ExecDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, erro
 		pluginClient:    client,
 		executor:        exec,
 		userPid:         id.UserPid,
-		allocDir:        id.AllocDir,
+		taskDir:         id.TaskDir,
 		isolationConfig: id.IsolationConfig,
 		logger:          d.logger,
 		version:         id.Version,
@@ -256,7 +255,7 @@ func (h *execHandle) ID() string {
 		MaxKillTimeout:  h.maxKillTimeout,
 		PluginConfig:    NewPluginReattachConfig(h.pluginClient.ReattachConfig()),
 		UserPid:         h.userPid,
-		AllocDir:        h.allocDir,
+		TaskDir:         h.taskDir,
 		IsolationConfig: h.isolationConfig,
 	}
 
