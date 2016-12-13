@@ -83,12 +83,11 @@ type AllocDirFS interface {
 // NewAllocDir initializes the AllocDir struct with allocDir as base path for
 // the allocation directory.
 func NewAllocDir(allocDir string) *AllocDir {
-	d := &AllocDir{
-		AllocDir: allocDir,
-		TaskDirs: make(map[string]*TaskDir),
+	return &AllocDir{
+		AllocDir:  allocDir,
+		SharedDir: filepath.Join(allocDir, SharedAllocName),
+		TaskDirs:  make(map[string]*TaskDir),
 	}
-	d.SharedDir = filepath.Join(d.AllocDir, SharedAllocName)
-	return d
 }
 
 // Snapshot creates an archive of the files and directories in the data dir of

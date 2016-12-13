@@ -76,6 +76,7 @@ type AllocRunner struct {
 type allocRunnerState struct {
 	Version                string
 	Alloc                  *structs.Allocation
+	AllocDir               *allocdir.AllocDir
 	AllocClientStatus      string
 	AllocClientDescription string
 }
@@ -118,12 +119,17 @@ func (r *AllocRunner) RestoreState() error {
 
 	// Restore fields
 	r.alloc = snap.Alloc
+	r.allocDir = snap.AllocDir
 	r.allocClientStatus = snap.AllocClientStatus
 	r.allocClientDescription = snap.AllocClientDescription
 
 	var snapshotErrors multierror.Error
 	if r.alloc == nil {
 		snapshotErrors.Errors = append(snapshotErrors.Errors, fmt.Errorf("alloc_runner snapshot includes a nil allocation"))
+	}
+	if r.allocDir == nil {
+		//FIXME Upgrade path?
+		snapshotErrors.Errors = append(snapshotErrors.Errors, fmt.Errorf("alloc_runner snapshot includes a nil alloc dir"))
 	}
 	if e := snapshotErrors.ErrorOrNil(); e != nil {
 		return e
@@ -137,12 +143,16 @@ func (r *AllocRunner) RestoreState() error {
 		// Mark the task as restored.
 		r.restored[name] = struct{}{}
 
-		//FIXME can we assume the taskdir has been built here?!
-		taskdir := allocdir.NewTaskDir(r.allocDir.AllocDir, name)
+		td, ok := r.allocDir.TaskDirs[name]
+		if !ok {
+			err := fmt.Errorf("failed to find task dir metadata for alloc %q task %q",
+				r.alloc.ID, name)
+			r.logger.Printf("[ERR] client: %v", err)
+			mErr.Errors = append(mErr.Errors, err)
+		}
 
 		task := &structs.Task{Name: name}
-		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, taskdir, r.Alloc(),
-			task, r.vaultClient)
+		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, td, r.Alloc(), task, r.vaultClient)
 		r.tasks[name] = tr
 
 		// Skip tasks in terminal states.
@@ -199,9 +209,14 @@ func (r *AllocRunner) saveAllocRunnerState() error {
 	allocClientDescription := r.allocClientDescription
 	r.allocLock.Unlock()
 
+	r.allocDirLock.RLock()
+	allocDir := r.allocDir
+	r.allocDirLock.RUnlock()
+
 	snap := allocRunnerState{
 		Version:                r.config.Version,
 		Alloc:                  alloc,
+		AllocDir:               allocDir,
 		AllocClientStatus:      allocClientStatus,
 		AllocClientDescription: allocClientDescription,
 	}
@@ -411,7 +426,7 @@ func (r *AllocRunner) Run() {
 		}
 
 		if r.otherAllocDir != nil {
-			if err := allocDir.Move(r.otherAllocDir, tg.Tasks); err != nil {
+			if err := r.allocDir.Move(r.otherAllocDir, tg.Tasks); err != nil {
 				r.logger.Printf("[ERROR] client: failed to move alloc dir into alloc %q: %v", r.alloc.ID, err)
 			}
 			if err := r.otherAllocDir.Destroy(); err != nil {

@@ -137,7 +137,7 @@ type DriverHandle interface {
 	Signal(s os.Signal) error
 }
 
-// ExecContext is shared between drivers within an allocation
+// ExecContext is a task's execution context
 type ExecContext struct {
 	// TaskDir contains information about the task directory structure.
 	TaskDir *allocdir.TaskDir
@@ -153,7 +153,7 @@ func NewExecContext(td *allocdir.TaskDir, allocID string) *ExecContext {
 
 // GetTaskEnv converts the alloc dir, the node, task and alloc into a
 // TaskEnvironment.
-func GetTaskEnv(allocDir *allocdir.AllocDir, node *structs.Node,
+func GetTaskEnv(taskDir *allocdir.TaskDir, node *structs.Node,
 	task *structs.Task, alloc *structs.Allocation, vaultToken string) (*env.TaskEnvironment, error) {
 
 	tg := alloc.Job.LookupTaskGroup(alloc.TaskGroup)
@@ -165,15 +165,10 @@ func GetTaskEnv(allocDir *allocdir.AllocDir, node *structs.Node,
 		SetEnvvars(task.Env).
 		SetTaskName(task.Name)
 
-	if allocDir != nil {
-		env.SetAllocDir(allocDir.SharedDir)
-		taskdir, ok := allocDir.TaskDirs[task.Name]
-		if !ok {
-			return nil, fmt.Errorf("failed to get task directory for task %q", task.Name)
-		}
-
-		env.SetTaskLocalDir(taskdir.LocalDir)
-		env.SetSecretsDir(taskdir.SecretsDir)
+	if taskDir != nil {
+		env.SetAllocDir(taskDir.SharedAllocDir)
+		env.SetTaskLocalDir(taskDir.LocalDir)
+		env.SetSecretsDir(taskDir.SecretsDir)
 	}
 
 	if task.Resources != nil {

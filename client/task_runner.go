@@ -83,7 +83,14 @@ type TaskRunner struct {
 
 	// artifactsDownloaded tracks whether the tasks artifacts have been
 	// downloaded
+	//
+	// Must acquire persistLock when accessing
 	artifactsDownloaded bool
+
+	// taskDirBuilt tracks whether the task has built its directory.
+	//
+	// Must acquire persistLock when accessing
+	taskDirBuilt bool
 
 	// vaultFuture is the means to wait for and get a Vault token
 	vaultFuture *tokenFuture
@@ -129,6 +136,7 @@ type taskRunnerState struct {
 	Task               *structs.Task
 	HandleID           string
 	ArtifactDownloaded bool
+	TaskDirBuilt       bool
 }
 
 // TaskStateUpdater is used to signal that tasks state has changed.
@@ -148,7 +156,7 @@ type SignalEvent struct {
 
 // NewTaskRunner is used to create a new task context
 func NewTaskRunner(logger *log.Logger, config *config.Config,
-	updater TaskStateUpdater, taskdir *allocdir.TaskDir,
+	updater TaskStateUpdater, taskDir *allocdir.TaskDir,
 	alloc *structs.Allocation, task *structs.Task,
 	vaultClient vaultclient.VaultClient) *TaskRunner {
 
@@ -218,11 +226,12 @@ func (r *TaskRunner) RestoreState() error {
 
 	// Restore fields
 	if snap.Task == nil {
-		return fmt.Errorf("task runner snapshot include nil Task")
+		return fmt.Errorf("task runner snapshot includes nil Task")
 	} else {
 		r.task = snap.Task
 	}
 	r.artifactsDownloaded = snap.ArtifactDownloaded
+	r.taskDirBuilt = snap.TaskDirBuilt
 
 	if err := r.setTaskEnv(); err != nil {
 		return fmt.Errorf("client: failed to create task environment for task %q in allocation %q: %v",
@@ -247,12 +256,13 @@ func (r *TaskRunner) RestoreState() error {
 
 	// Restore the driver
 	if snap.HandleID != "" {
-		driver, err := r.createDriver()
+		d, err := r.createDriver()
 		if err != nil {
 			return err
 		}
 
-		handle, err := driver.Open(r.ctx, snap.HandleID)
+		ctx := driver.NewExecContext(r.taskDir, r.alloc.ID)
+		handle, err := d.Open(ctx, snap.HandleID)
 
 		// In the case it fails, we relaunch the task in the Run() method.
 		if err != nil {
@@ -278,10 +288,11 @@ func (r *TaskRunner) SaveState() error {
 
 	snap := taskRunnerState{
 		Task:               r.task,
-		TaskDir:            r.taskDir,
 		Version:            r.config.Version,
 		ArtifactDownloaded: r.artifactsDownloaded,
+		TaskDirBuilt:       r.taskDirBuilt,
 	}
+
 	r.handleLock.Lock()
 	if r.handle != nil {
 		snap.HandleID = r.handle.ID()
@@ -292,6 +303,9 @@ func (r *TaskRunner) SaveState() error {
 
 // DestroyState is used to cleanup after ourselves
 func (r *TaskRunner) DestroyState() error {
+	r.persistLock.Lock()
+	defer r.persistLock.Unlock()
+
 	return os.RemoveAll(r.stateFilePath())
 }
 
@@ -312,7 +326,7 @@ func (r *TaskRunner) setTaskEnv() error {
 	r.taskEnvLock.Lock()
 	defer r.taskEnvLock.Unlock()
 
-	taskEnv, err := driver.GetTaskEnv(r.ctx.AllocDir, r.config.Node, r.task.Copy(), r.alloc, r.vaultFuture.Get())
+	taskEnv, err := driver.GetTaskEnv(r.taskDir, r.config.Node, r.task.Copy(), r.alloc, r.vaultFuture.Get())
 	if err != nil {
 		return err
 	}
@@ -694,8 +708,12 @@ func (r *TaskRunner) prestart(resultCh chan bool) {
 	}
 
 	for {
+		r.persistLock.Lock()
+		downloaded := r.artifactsDownloaded
+		r.persistLock.Unlock()
+
 		// Download the task's artifacts
-		if !r.artifactsDownloaded && len(r.task.Artifacts) > 0 {
+		if !downloaded && len(r.task.Artifacts) > 0 {
 			r.setState(structs.TaskStatePending, structs.NewTaskEvent(structs.TaskDownloadingArtifacts))
 			for _, artifact := range r.task.Artifacts {
 				if err := getter.GetArtifact(r.getTaskEnv(), artifact, r.taskDir.Dir); err != nil {
@@ -707,7 +725,9 @@ func (r *TaskRunner) prestart(resultCh chan bool) {
 				}
 			}
 
+			r.persistLock.Lock()
 			r.artifactsDownloaded = true
+			r.persistLock.Unlock()
 		}
 
 		// We don't have to wait for any template
@@ -1003,26 +1023,23 @@ func (r *TaskRunner) killTask(killingEvent *structs.TaskEvent) {
 	r.setState("", structs.NewTaskEvent(structs.TaskKilled).SetKillError(err))
 }
 
-// startTask creates the driver and starts the task.
+// startTask creates the driver, task dir, and starts the task.
 func (r *TaskRunner) startTask() error {
 	// Create a driver
-	driver, err := r.createDriver()
+	drv, err := r.createDriver()
 	if err != nil {
 		return fmt.Errorf("failed to create driver of task %q for alloc %q: %v",
 			r.task.Name, r.alloc.ID, err)
 	}
 
 	// Build base task directory structure regardless of FS isolation abilities
-	chroot := config.DefaultChrootEnv
-	if len(r.config.ChrootEnv) > 0 {
-		chroot = e.config.ChrootEnv
-	}
-	if err := r.taskdir.Build(chroot, driver.FSIsolation()); err != nil {
-		return err
+	if err := r.buildTaskDir(drv.FSIsolation()); err != nil {
+		return fmt.Errorf("failed to build task directory for %q: %v", r.task.Name, err)
 	}
 
 	// Run prestart
-	if err := driver.Prestart(r.ctx, r.task); err != nil {
+	ctx := driver.NewExecContext(r.taskDir, r.alloc.ID)
+	if err := drv.Prestart(ctx, r.task); err != nil {
 		wrapped := fmt.Errorf("failed to initialize task %q for alloc %q: %v",
 			r.task.Name, r.alloc.ID, err)
 
@@ -1036,7 +1053,7 @@ func (r *TaskRunner) startTask() error {
 	}
 
 	// Start the job
-	handle, err := driver.Start(r.ctx, r.task)
+	handle, err := drv.Start(ctx, r.task)
 	if err != nil {
 		wrapped := fmt.Errorf("failed to start task %q for alloc %q: %v",
 			r.task.Name, r.alloc.ID, err)
@@ -1054,6 +1071,32 @@ func (r *TaskRunner) startTask() error {
 	r.handleLock.Lock()
 	r.handle = handle
 	r.handleLock.Unlock()
+	return nil
+}
+
+// buildTaskDir creates the task directory before driver.Prestart. It is safe
+// to call multiple times as its state is persisted.
+func (r *TaskRunner) buildTaskDir(fsi cstructs.FSIsolation) error {
+	r.persistLock.Lock()
+	if r.taskDirBuilt {
+		// Already built! Nothing to do.
+		r.persistLock.Unlock()
+		return nil
+	}
+	r.persistLock.Unlock()
+
+	chroot := config.DefaultChrootEnv
+	if len(r.config.ChrootEnv) > 0 {
+		chroot = r.config.ChrootEnv
+	}
+	if err := r.taskDir.Build(chroot, fsi); err != nil {
+		return err
+	}
+
+	// Mark task dir as successfully built
+	r.persistLock.Lock()
+	r.taskDirBuilt = true
+	r.persistLock.Unlock()
 	return nil
 }
 

@@ -33,21 +33,6 @@ type TaskDir struct {
 	// SecretsDir is the path to secrets/ directory on the host
 	// <task_dir>/secrets/
 	SecretsDir string
-
-	// SharedMounted is true if the shared allocation directory has been
-	// mounted into the task directory. Not applicable on all systems and
-	// only used to prevent trying to mount more than once.
-	SharedMounted bool
-
-	// SecretsMounted is true if the secrets tmpfs has been mounted. Not
-	// applicable on all systems and only used to prevent trying to mount
-	// more than once.
-	SecretsMounted bool
-
-	// ChrootBuilt is true if a chroot has been successfully built. Since
-	// chroots are expensive to build it's worth managing extra state to
-	// avoid creating it more than once.
-	ChrootBuilt bool
 }
 
 // NewTaskDir creates a TaskDir struct with paths set. Call Build() to
@@ -96,34 +81,27 @@ func (t *TaskDir) Build(chroot map[string]string, fsi cstructs.FSIsolation) erro
 		}
 	}
 
-	if !t.SharedMounted {
-		// Always link the shared task directory even though image based
-		// filesystem isolalation doesn't require it. This way we have a
-		// consistent task dir.
-		if err := linkDir(t.SharedAllocDir, t.SharedTaskDir); err != nil {
-			return fmt.Errorf("Failed to mount shared directory for task: %v", err)
-		}
+	// Always link the shared task directory even though image based
+	// filesystem isolalation doesn't require it. This way we have a
+	// consistent task dir.
+	if err := linkDir(t.SharedAllocDir, t.SharedTaskDir); err != nil {
+		return fmt.Errorf("Failed to mount shared directory for task: %v", err)
 	}
-	t.SharedMounted = true
 
 	// Create the secret directory
-	if !t.SecretsMounted {
-		if err := createSecretDir(t.SecretsDir); err != nil {
-			return err
-		}
+	if err := createSecretDir(t.SecretsDir); err != nil {
+		return err
 	}
-	t.SecretsMounted = true
 
 	if err := dropDirPermissions(t.SecretsDir); err != nil {
 		return err
 	}
 
 	// Build chroot if chroot filesystem isolation is going to be used
-	if !t.ChrootMounted && fsi == cstructs.FSIsolationChroot {
+	if fsi == cstructs.FSIsolationChroot {
 		if err := t.buildChroot(chroot); err != nil {
 			return err
 		}
-		t.ChrootMounted = true
 	}
 
 	return nil
