@@ -85,6 +85,10 @@ func (d *RawExecDriver) Abilities() DriverAbilities {
 	}
 }
 
+func (d *RawExecDriver) FSIsolation() cstructs.FSIsolation {
+	return cstructs.FSIsolationNone
+}
+
 func (d *RawExecDriver) Fingerprint(cfg *config.Config, node *structs.Node) (bool, error) {
 	// Get the current status so that we can log any debug messages only if the
 	// state changes

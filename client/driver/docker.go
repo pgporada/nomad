@@ -343,6 +343,10 @@ func (d *DockerDriver) Abilities() DriverAbilities {
 	}
 }
 
+func (d *DockerDriver) FSIsolation() cstructs.FSIsolation {
+	return cstructs.FSIsolationImage
+}
+
 func (d *DockerDriver) Prestart(ctx *ExecContext, task *structs.Task) error {
 	// Set environment variables.
 	d.taskEnv.SetAllocDir(allocdir.SharedAllocContainerPath).

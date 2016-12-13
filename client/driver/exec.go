@@ -89,8 +89,11 @@ func (d *ExecDriver) Validate(config map[string]interface{}) error {
 func (d *ExecDriver) Abilities() DriverAbilities {
 	return DriverAbilities{
 		SendSignals: true,
-		FSIsolation: FSIsolationChroot,
 	}
+}
+
+func (d *ExecDriver) FSIsolation() cstructs.FSIsolation {
+	return cstructs.FSIsolationChroot
 }
 
 func (d *ExecDriver) Periodic() (bool, time.Duration) {

@@ -118,16 +118,12 @@ func (r *AllocRunner) RestoreState() error {
 
 	// Restore fields
 	r.alloc = snap.Alloc
-	r.ctx = snap.Context
 	r.allocClientStatus = snap.AllocClientStatus
 	r.allocClientDescription = snap.AllocClientDescription
 
 	var snapshotErrors multierror.Error
 	if r.alloc == nil {
 		snapshotErrors.Errors = append(snapshotErrors.Errors, fmt.Errorf("alloc_runner snapshot includes a nil allocation"))
-	}
-	if r.ctx == nil {
-		snapshotErrors.Errors = append(snapshotErrors.Errors, fmt.Errorf("alloc_runner snapshot includes a nil context"))
 	}
 	if e := snapshotErrors.ErrorOrNil(); e != nil {
 		return e
@@ -141,8 +137,11 @@ func (r *AllocRunner) RestoreState() error {
 		// Mark the task as restored.
 		r.restored[name] = struct{}{}
 
+		//FIXME can we assume the taskdir has been built here?!
+		taskdir := allocdir.NewTaskDir(r.allocDir.AllocDir, name)
+
 		task := &structs.Task{Name: name}
-		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, r.ctx, r.Alloc(),
+		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, taskdir, r.Alloc(),
 			task, r.vaultClient)
 		r.tasks[name] = tr
 
@@ -165,10 +164,7 @@ func (r *AllocRunner) RestoreState() error {
 
 // GetAllocDir returns the alloc dir for the alloc runner
 func (r *AllocRunner) GetAllocDir() *allocdir.AllocDir {
-	if r.ctx == nil {
-		return nil
-	}
-	return r.ctx.AllocDir
+	return r.allocDir
 }
 
 // SaveState is used to snapshot the state of the alloc runner
@@ -227,7 +223,7 @@ func (r *AllocRunner) DestroyState() error {
 
 // DestroyContext is used to destroy the context
 func (r *AllocRunner) DestroyContext() error {
-	return r.ctx.AllocDir.Destroy()
+	return r.allocDir.Destroy()
 }
 
 // copyTaskStates returns a copy of the passed task states.
@@ -407,10 +403,10 @@ func (r *AllocRunner) Run() {
 	if r.allocDir == nil {
 		// Build allocation directory
 		r.allocDir = allocdir.NewAllocDir(filepath.Join(r.config.AllocDir, r.alloc.ID))
-		if err := allocDir.Build(); err != nil {
+		if err := r.allocDir.Build(); err != nil {
 			r.logger.Printf("[WARN] client: failed to build task directories: %v", err)
 			r.setStatus(structs.AllocClientStatusFailed, fmt.Sprintf("failed to build task dirs for '%s'", alloc.TaskGroup))
-			r.ctxLock.Unlock()
+			r.allocDirLock.Unlock()
 			return
 		}
 

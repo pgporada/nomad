@@ -278,6 +278,7 @@ func (r *TaskRunner) SaveState() error {
 
 	snap := taskRunnerState{
 		Task:               r.task,
+		TaskDir:            r.taskDir,
 		Version:            r.config.Version,
 		ArtifactDownloaded: r.artifactsDownloaded,
 	}
@@ -1011,32 +1012,13 @@ func (r *TaskRunner) startTask() error {
 			r.task.Name, r.alloc.ID, err)
 	}
 
-	abilities := driver.Abilities()
-
 	// Build base task directory structure regardless of FS isolation abilities
-	if err := r.taskdir.Build(); err != nil {
+	chroot := config.DefaultChrootEnv
+	if len(r.config.ChrootEnv) > 0 {
+		chroot = e.config.ChrootEnv
+	}
+	if err := r.taskdir.Build(chroot, driver.FSIsolation()); err != nil {
 		return err
-	}
-
-	// Build the chroot for drivers with that ability
-	if abilities.FSIsolation == driver.FSIsolationChroot {
-		chroot := config.DefaultChrootEnv
-		if len(r.config.ChrootEnv) > 0 {
-			chroot = e.config.ChrootEnv
-		}
-
-		if err := r.taskDir.BuildChroot(chroot); err != nil {
-			return fmt.Errorf("failed to build chroot for task %q for alloc %q: %v",
-				r.task.Name, r.alloc.ID, err)
-		}
-	}
-
-	// Both no-fs-isolation and chroot-isolation expect the shared alloc
-	// dir to be mounted inside the task dir
-	if abilities.FSIsolation == driver.FSIsolationNone || abilities.FSIsolation == driver.FSIsolationChroot {
-		if err := r.taskDir.MountSharedDir(); err != nil {
-			return err
-		}
 	}
 
 	// Run prestart

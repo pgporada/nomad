@@ -65,44 +65,15 @@ type Driver interface {
 
 	// Abilities returns the abilities of the driver
 	Abilities() DriverAbilities
+
+	// FSIsolation returns the method of filesystem isolation used
+	FSIsolation() cstructs.FSIsolation
 }
 
 // DriverAbilities marks the abilities the driver has.
 type DriverAbilities struct {
 	// SendSignals marks the driver as being able to send signals
 	SendSignals bool
-
-	// FSIsolation is the filesystem isolation provided by the driver.
-	FSIsolation FSIsolation
-}
-
-// FSIsolation is an enumeration to describe what kind of filesystem isolation
-// a driver supports.
-type FSIsolation int
-
-const (
-	// FSIsolationNone means no isolation. The host filesystem is used.
-	FSIsolationNone FSIsolation = 0
-
-	// FSIsolationChroot means the driver will use a chroot on the host
-	// filesystem.
-	FSIsolationChroot FSIsolation = 1
-
-	// FSIsolationImage means the driver uses an image.
-	FSIsolationImage FSIsolation = 2
-)
-
-func (f FSIsolation) String() string {
-	switch f {
-	case 0:
-		return "none"
-	case 1:
-		return "chroot"
-	case 2:
-		return "image"
-	default:
-		return "INVALID"
-	}
 }
 
 // LogEventFn is a callback which allows Drivers to emit task events.

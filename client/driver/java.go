@@ -97,6 +97,10 @@ func (d *JavaDriver) Abilities() DriverAbilities {
 	}
 }
 
+func (d *JavaDriver) FSIsolation() cstructs.FSIsolation {
+	return cstructs.FSIsolationChroot
+}
+
 func (d *JavaDriver) Fingerprint(cfg *config.Config, node *structs.Node) (bool, error) {
 	// Get the current status so that we can log any debug messages only if the
 	// state changes

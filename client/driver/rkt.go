@@ -101,6 +101,10 @@ func NewRktDriver(ctx *DriverContext) Driver {
 	return &RktDriver{DriverContext: *ctx}
 }
 
+func (d *RktDriver) FSIsolation() cstructs.FSIsolation {
+	return cstructs.FSIsolationImage
+}
+
 // Validate is used to validate the driver configuration
 func (d *RktDriver) Validate(config map[string]interface{}) error {
 	fd := &fields.FieldData{

@@ -3,6 +3,7 @@ package allocdir
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -11,6 +12,10 @@ import (
 const (
 	// secretDirTmpfsSize is the size of the tmpfs per task in MBs
 	secretDirTmpfsSize = 1
+
+	// secretMarker is the filename of the marker created so Nomad doesn't
+	// try to mount the secrets tmpfs more than once
+	secretMarker = ".nomad-mount"
 )
 
 // linkDir bind mounts src to dst as Linux doesn't support hardlinking
@@ -38,11 +43,27 @@ func createSecretDir(dir string) error {
 			return err
 		}
 
+		// Check for marker file and skip mounting if it exists
+		marker := filepath.Join(dir, secretMarker)
+		if _, err := os.Stat(marker); err == nil {
+			return nil
+		}
+
 		var flags uintptr
 		flags = syscall.MS_NOEXEC
 		options := fmt.Sprintf("size=%dm", secretDirTmpfsSize)
-		err := syscall.Mount("tmpfs", dir, "tmpfs", flags, options)
-		return os.NewSyscallError("mount", err)
+		if err := syscall.Mount("tmpfs", dir, "tmpfs", flags, options); err != nil {
+			return os.NewSyscallError("mount", err)
+		}
+
+		// Create the marker file so we don't try to mount more than once
+		f, err := os.OpenFile(marker, os.O_RDWR|os.O_CREATE, 0666)
+		if err != nil {
+			// Hard fail since if this fails something is really wrong
+			return err
+		}
+		f.Close()
+		return nil
 	}
 
 	return os.MkdirAll(dir, 0777)

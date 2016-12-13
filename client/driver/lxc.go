@@ -152,6 +152,10 @@ func (d *LxcDriver) Abilities() DriverAbilities {
 	}
 }
 
+func (d *LxcDriver) FSIsolation() cstructs.FSIsolation {
+	return cstructs.FSIsolationImage
+}
+
 // Fingerprint fingerprints the lxc driver configuration
 func (d *LxcDriver) Fingerprint(cfg *config.Config, node *structs.Node) (bool, error) {
 	enabled := cfg.ReadBoolDefault(lxcConfigOption, true)
