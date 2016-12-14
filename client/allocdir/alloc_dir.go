@@ -40,12 +40,6 @@ var (
 
 	// TaskDirs is the set of directories created in each tasks directory.
 	TaskDirs = []string{"tmp"}
-
-	// chrootDrivers are drivers that require a chroot be built.
-	chrootDrivers = map[string]bool{
-		"exec": true,
-		"java": true,
-	}
 )
 
 type AllocDir struct {
