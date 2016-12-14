@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 var (
@@ -31,14 +30,14 @@ func mountSharedDir(dir string) error {
 	return errors.New("Mount on Windows not supported.")
 }
 
-// linkDir hardlinks src to dst. The src and dst must be on the same filesystem.
+// The windows version does nothing currently.
 func linkDir(src, dst string) error {
-	return syscall.Link(src, dst)
+	return nil
 }
 
-// unlinkDir removes a directory link.
+// The windows version does nothing currently.
 func unlinkDir(dir string) error {
-	return syscall.Unlink(dir)
+	return nil
 }
 
 // createSecretDir creates the secrets dir folder at the given path
