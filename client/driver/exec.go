@@ -36,7 +36,6 @@ type ExecDriver struct {
 
 	// Set by Prestart
 	driverConfig ExecDriverConfig
-	taskDir      string
 }
 
 type ExecDriverConfig struct {
@@ -129,7 +128,7 @@ func (d *ExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 	if err != nil {
 		return nil, fmt.Errorf("unable to find the nomad binary: %v", err)
 	}
-	pluginLogFile := filepath.Join(d.taskDir, fmt.Sprintf("%s-executor.out", task.Name))
+	pluginLogFile := filepath.Join(ctx.TaskDir.Dir, fmt.Sprintf("%s-executor.out", task.Name))
 	pluginConfig := &plugin.ClientConfig{
 		Cmd: exec.Command(bin, "executor", pluginLogFile),
 	}
@@ -143,7 +142,7 @@ func (d *ExecDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, 
 		Driver:  "exec",
 		AllocID: ctx.AllocID,
 		LogDir:  ctx.TaskDir.LogDir,
-		TaskDir: d.taskDir,
+		TaskDir: ctx.TaskDir.Dir,
 		Task:    task,
 	}
 	if err := exec.SetContext(executorCtx); err != nil {

@@ -292,7 +292,7 @@ func (e *UniversalExecutor) LaunchCmd(command *ExecCommand) (*ProcessState, erro
 	if e.fsIsolationEnforced {
 		rel, err := filepath.Rel(e.ctx.TaskDir, path)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to determine relative path base=%q target=%q: %v", e.ctx.TaskDir, path, err)
 		}
 		path = rel
 	}
