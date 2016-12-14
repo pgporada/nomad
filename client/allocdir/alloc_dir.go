@@ -84,6 +84,13 @@ func NewAllocDir(allocDir string) *AllocDir {
 	}
 }
 
+// NewTaskDir creates a new TaskDir and adds it to the AllocDirs TaskDirs map.
+func (d *AllocDir) NewTaskDir(name string) *TaskDir {
+	td := newTaskDir(d.AllocDir, name)
+	d.TaskDirs[name] = td
+	return td
+}
+
 // Snapshot creates an archive of the files and directories in the data dir of
 // the allocation and the task local directories
 func (d *AllocDir) Snapshot(w io.Writer) error {
@@ -182,12 +189,13 @@ func (d *AllocDir) Destroy() error {
 	}
 
 	if err := os.RemoveAll(d.AllocDir); err != nil {
-		mErr.Errors = append(mErr.Errors, err)
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("failed to remove alloc dir %q: %v", d.AllocDir, err))
 	}
 
 	return mErr.ErrorOrNil()
 }
 
+// UnmountAll linked/mounted directories in task dirs.
 func (d *AllocDir) UnmountAll() error {
 	var mErr multierror.Error
 	for _, dir := range d.TaskDirs {
@@ -209,9 +217,10 @@ func (d *AllocDir) UnmountAll() error {
 			}
 		}
 
-		// Unmount dev/ and proc/ have been mounted. Make a best effort
-		// and ignore errors.
-		dir.unmountSpecialDirs()
+		// Unmount dev/ and proc/ have been mounted.
+		if err := dir.unmountSpecialDirs(); err != nil {
+			mErr.Errors = append(mErr.Errors, err)
+		}
 	}
 
 	return mErr.ErrorOrNil()

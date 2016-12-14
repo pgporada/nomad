@@ -35,9 +35,11 @@ type TaskDir struct {
 	SecretsDir string
 }
 
-// NewTaskDir creates a TaskDir struct with paths set. Call Build() to
+// newTaskDir creates a TaskDir struct with paths set. Call Build() to
 // create paths on disk.
-func NewTaskDir(allocDir, taskName string) *TaskDir {
+//
+// Call AllocDir.NewTaskDir to create new TaskDirs
+func newTaskDir(allocDir, taskName string) *TaskDir {
 	taskDir := filepath.Join(allocDir, taskName)
 	return &TaskDir{
 		Dir:            taskDir,

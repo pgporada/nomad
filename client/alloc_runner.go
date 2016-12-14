@@ -455,7 +455,7 @@ func (r *AllocRunner) Run() {
 		}
 
 		r.allocDirLock.RLock()
-		taskdir := allocdir.NewTaskDir(r.allocDir.AllocDir, task.Name)
+		taskdir := r.allocDir.NewTaskDir(task.Name)
 		r.allocDirLock.RUnlock()
 
 		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, taskdir, r.Alloc(), task.Copy(), r.vaultClient)
