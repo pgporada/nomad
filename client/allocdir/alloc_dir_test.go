@@ -50,8 +50,7 @@ var (
 	}
 )
 
-// Test that given a set of tasks, each task gets a directory and that directory
-// has the shared alloc dir inside of it.
+// Test that AllocDir.Build builds just the alloc directory.
 func TestAllocDir_BuildAlloc(t *testing.T) {
 	tmp, err := ioutil.TempDir("", "AllocDir")
 	if err != nil {
@@ -61,67 +60,30 @@ func TestAllocDir_BuildAlloc(t *testing.T) {
 
 	d := NewAllocDir(tmp)
 	defer d.Destroy()
-	tasks := []*structs.Task{t1, t2}
-	if err := d.Build(tasks); err != nil {
-		t.Fatalf("Build(%v) failed: %v", tasks, err)
+	d.NewTaskDir(t1.Name)
+	d.NewTaskDir(t2.Name)
+	if err := d.Build(); err != nil {
+		t.Fatalf("Build() failed: %v", err)
 	}
 
 	// Check that the AllocDir and each of the task directories exist.
 	if _, err := os.Stat(d.AllocDir); os.IsNotExist(err) {
-		t.Fatalf("Build(%v) didn't create AllocDir %v", tasks, d.AllocDir)
+		t.Fatalf("Build() didn't create AllocDir %v", d.AllocDir)
 	}
 
-	for _, task := range tasks {
+	for _, task := range []*structs.Task{t1, t2} {
 		tDir, ok := d.TaskDirs[task.Name]
 		if !ok {
 			t.Fatalf("Task directory not found for %v", task.Name)
 		}
 
-		if _, err := os.Stat(tDir); os.IsNotExist(err) {
-			t.Fatalf("Build(%v) didn't create TaskDir %v", tasks, tDir)
+		if stat, _ := os.Stat(tDir.Dir); stat != nil {
+			t.Fatalf("Build() created TaskDir %v", tDir.Dir)
 		}
 
-		if _, err := os.Stat(filepath.Join(tDir, TaskSecrets)); os.IsNotExist(err) {
-			t.Fatalf("Build(%v) didn't create secret dir %v", tasks)
+		if stat, _ := os.Stat(tDir.SecretsDir); stat != nil {
+			t.Fatalf("Build() created secret dir %v", tDir.Dir)
 		}
-	}
-}
-
-func TestAllocDir_LogDir(t *testing.T) {
-	tmp, err := ioutil.TempDir("", "AllocDir")
-	if err != nil {
-		t.Fatalf("Couldn't create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp)
-
-	d := NewAllocDir(tmp)
-	defer d.Destroy()
-
-	expected := filepath.Join(d.AllocDir, SharedAllocName, LogDirName)
-	if d.LogDir() != expected {
-		t.Fatalf("expected: %v, got: %v", expected, d.LogDir())
-	}
-}
-
-func TestAllocDir_EmbedNonExistent(t *testing.T) {
-	tmp, err := ioutil.TempDir("", "AllocDir")
-	if err != nil {
-		t.Fatalf("Couldn't create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp)
-
-	d := NewAllocDir(tmp)
-	defer d.Destroy()
-	tasks := []*structs.Task{t1, t2}
-	if err := d.Build(tasks); err != nil {
-		t.Fatalf("Build(%v) failed: %v", tasks, err)
-	}
-
-	fakeDir := "/foobarbaz"
-	task := tasks[0].Name
-	mapping := map[string]string{fakeDir: fakeDir}
-	if err := d.Embed(task, mapping); err != nil {
-		t.Fatalf("Embed(%v, %v) should should skip %v since it does not exist", task, mapping, fakeDir)
 	}
 }
 
