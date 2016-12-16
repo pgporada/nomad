@@ -11,6 +11,14 @@ import (
 	"github.com/hashicorp/nomad/nomad/structs"
 )
 
+const (
+	// availableDiskPercent is the percent of disk that Nomad tries to keep free
+	availableDiskPercent = 0.2
+
+	// gcInterval is the interval at which Nomad runs the garbage collector
+	gcInterval = 5 * time.Second
+)
+
 type GCAlloc struct {
 	timeStamp   time.Time
 	allocRunner *AllocRunner
@@ -54,6 +62,8 @@ func (pq *GCAllocPQImpl) Pop() interface{} {
 type IndexedGCAllocPQ struct {
 	index map[string]*GCAlloc
 	heap  GCAllocPQImpl
+
+	pqLock sync.Mutex
 }
 
 func NewIndexedGCAllocPQ() *IndexedGCAllocPQ {
@@ -64,6 +74,9 @@ func NewIndexedGCAllocPQ() *IndexedGCAllocPQ {
 }
 
 func (i *IndexedGCAllocPQ) Push(ar *AllocRunner) error {
+	i.pqLock.Lock()
+	defer i.pqLock.Unlock()
+
 	alloc := ar.Alloc()
 	if _, ok := i.index[alloc.ID]; ok {
 		return fmt.Errorf("alloc %v already being tracked for GC", alloc.ID)
@@ -78,6 +91,9 @@ func (i *IndexedGCAllocPQ) Push(ar *AllocRunner) error {
 }
 
 func (i *IndexedGCAllocPQ) Pop() *GCAlloc {
+	i.pqLock.Lock()
+	defer i.pqLock.Unlock()
+
 	if len(i.heap) == 0 {
 		return nil
 	}
@@ -88,6 +104,9 @@ func (i *IndexedGCAllocPQ) Pop() *GCAlloc {
 }
 
 func (i *IndexedGCAllocPQ) Remove(allocID string) (*GCAlloc, error) {
+	i.pqLock.Lock()
+	defer i.pqLock.Unlock()
+
 	if gcAlloc, ok := i.index[allocID]; ok {
 		heap.Remove(&i.heap, gcAlloc.index)
 		delete(i.index, allocID)
@@ -98,25 +117,90 @@ func (i *IndexedGCAllocPQ) Remove(allocID string) (*GCAlloc, error) {
 }
 
 func (i *IndexedGCAllocPQ) Length() int {
+	i.pqLock.Lock()
+	defer i.pqLock.Unlock()
+
 	return len(i.heap)
 }
 
 // AllocGarbageCollector garbage collects terminated allocations on a node
 type AllocGarbageCollector struct {
 	allocRunners   *IndexedGCAllocPQ
-	allocsLock     sync.Mutex
 	statsCollector *stats.HostStatsCollector
+	reservedDiskMB int
 	logger         *log.Logger
+	shutdownCh     chan struct{}
 }
 
 // NewAllocGarbageCollector returns a garbage collector for terminated
 // allocations on a node.
-func NewAllocGarbageCollector(logger *log.Logger, statsCollector *stats.HostStatsCollector) *AllocGarbageCollector {
-	return &AllocGarbageCollector{
+func NewAllocGarbageCollector(logger *log.Logger, statsCollector *stats.HostStatsCollector, reservedDiskMB int) *AllocGarbageCollector {
+	gc := &AllocGarbageCollector{
 		allocRunners:   NewIndexedGCAllocPQ(),
 		statsCollector: statsCollector,
+		reservedDiskMB: reservedDiskMB,
 		logger:         logger,
+		shutdownCh:     make(chan struct{}),
 	}
+	go gc.run()
+
+	return gc
+}
+
+func (a *AllocGarbageCollector) run() {
+	ticker := time.NewTicker(gcInterval)
+	for {
+		select {
+		case <-ticker.C:
+			if err := a.keepUsageBelowThreshold(); err != nil {
+				a.logger.Printf("[ERR] client: error GCing allocation: %v", err)
+			}
+		case <-a.shutdownCh:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
+// keepUsageBelowThreshold collects disk usage information and garbage collects
+// allocations to make disk space available.
+func (a *AllocGarbageCollector) keepUsageBelowThreshold() error {
+	for {
+		// Check if we have enough free space
+		err := a.statsCollector.Collect()
+		if err != nil {
+			return err
+		}
+
+		// See if we have enough available disk space
+		diskStats := a.statsCollector.Stats().AllocDirStats
+		freeSpaceNeeded := float64(diskStats.Available-uint64(a.reservedDiskMB*1024*1024)) * 0.2
+		if diskStats.Available >= uint64(freeSpaceNeeded) {
+			break
+		}
+
+		// Collect an allocation
+		gcAlloc := a.allocRunners.Pop()
+		if gcAlloc == nil {
+			break
+		}
+
+		ar := gcAlloc.allocRunner
+		alloc := ar.Alloc()
+		a.logger.Printf("[INFO] client: garbage collecting allocation %v", alloc.ID)
+
+		// Destroy the alloc runner and wait until it exits
+		ar.Destroy()
+		select {
+		case <-ar.WaitCh():
+		case <-a.shutdownCh:
+		}
+	}
+	return nil
+}
+
+func (a *AllocGarbageCollector) Stop() {
+	a.shutdownCh <- struct{}{}
 }
 
 // Collect garbage collects a single allocation on a node
@@ -157,8 +241,30 @@ func (a *AllocGarbageCollector) MakeRoomFor(allocations []*structs.Allocation) e
 		}
 	}
 
+	// If the host has enough free space to accomodate the new allocations then
+	// we don't need to garbage collect terminated allocations
+	hostStats := a.statsCollector.Stats()
+	if hostStats != nil && uint64(totalResource.DiskMB*1024*1024) < hostStats.AllocDirStats.Available {
+		return nil
+	}
+
 	var diskCleared int
 	for {
+		// Collect host stats and see if we still need to remove older
+		// allocations
+		if err := a.statsCollector.Collect(); err == nil {
+			hostStats := a.statsCollector.Stats()
+			if hostStats.AllocDirStats.Available >= uint64(totalResource.DiskMB*1024*1024) {
+				break
+			}
+		} else {
+			// Falling back to a simpler model to know if we have enough disk
+			// space if stats collection fails
+			if diskCleared >= totalResource.DiskMB {
+				break
+			}
+		}
+
 		gcAlloc := a.allocRunners.Pop()
 		if gcAlloc == nil {
 			break
@@ -167,11 +273,16 @@ func (a *AllocGarbageCollector) MakeRoomFor(allocations []*structs.Allocation) e
 		ar := gcAlloc.allocRunner
 		alloc := ar.Alloc()
 		a.logger.Printf("[INFO] client: garbage collecting allocation %v", alloc.ID)
+
+		// Destroy the alloc runner and wait until it exits
 		ar.Destroy()
-		diskCleared += alloc.Resources.DiskMB
-		if diskCleared >= totalResource.DiskMB {
-			break
+		select {
+		case <-ar.WaitCh():
+		case <-a.shutdownCh:
 		}
+
+		// Call stats collect again
+		diskCleared += alloc.Resources.DiskMB
 	}
 	return nil
 }
@@ -187,7 +298,5 @@ func (a *AllocGarbageCollector) MarkForCollection(ar *AllocRunner) error {
 	}
 
 	a.logger.Printf("[INFO] client: marking allocation %v for GC", ar.Alloc().ID)
-	a.allocsLock.Lock()
-	defer a.allocsLock.Unlock()
 	return a.allocRunners.Push(ar)
 }

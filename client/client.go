@@ -177,7 +177,7 @@ func NewClient(cfg *config.Config, consulSyncer *consul.Syncer, logger *log.Logg
 		tlsWrap = tw
 	}
 
-	statsCollector := stats.NewHostStatsCollector(logger)
+	statsCollector := stats.NewHostStatsCollector(logger, cfg.AllocDir)
 
 	// Create the client
 	c := &Client{
@@ -195,7 +195,7 @@ func NewClient(cfg *config.Config, consulSyncer *consul.Syncer, logger *log.Logg
 		servers:             newServerList(),
 		triggerDiscoveryCh:  make(chan struct{}),
 		serversDiscoveredCh: make(chan struct{}),
-		garbageCollector:    NewAllocGarbageCollector(logger, statsCollector),
+		garbageCollector:    NewAllocGarbageCollector(logger, statsCollector, cfg.Node.Reserved.DiskMB),
 	}
 
 	// Initialize the client
@@ -371,6 +371,9 @@ func (c *Client) Shutdown() error {
 	if c.vaultClient != nil {
 		c.vaultClient.Stop()
 	}
+
+	// Stop Garbage collector
+	c.garbageCollector.Stop()
 
 	// Destroy all the running allocations.
 	if c.config.DevMode {
