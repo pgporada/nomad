@@ -151,7 +151,7 @@ func (d *AllocDir) Snapshot(w io.Writer) error {
 	return nil
 }
 
-// Move moves the shared data and task local dirs
+// Move other alloc directory's shared path and local dir to this alloc dir.
 func (d *AllocDir) Move(other *AllocDir, tasks []*structs.Task) error {
 	// Move the data directory
 	otherDataDir := filepath.Join(other.SharedDir, SharedDataDir)
@@ -433,7 +433,7 @@ type fileInfo struct {
 }
 
 // splitPath stats each subdirectory of a path. The first element of the array
-// is the file passed to this method, and the last element is the root of the
+// is the file passed to this function, and the last element is the root of the
 // path.
 func splitPath(path string) ([]fileInfo, error) {
 	var mode os.FileMode

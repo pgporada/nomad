@@ -48,7 +48,7 @@ type AllocRunner struct {
 	dirtyCh chan struct{}
 
 	allocDir     *allocdir.AllocDir
-	allocDirLock sync.RWMutex
+	allocDirLock sync.Mutex
 
 	tasks      map[string]*TaskRunner
 	taskStates map[string]*structs.TaskState
@@ -209,9 +209,9 @@ func (r *AllocRunner) saveAllocRunnerState() error {
 	allocClientDescription := r.allocClientDescription
 	r.allocLock.Unlock()
 
-	r.allocDirLock.RLock()
+	r.allocDirLock.Lock()
 	allocDir := r.allocDir
-	r.allocDirLock.RUnlock()
+	r.allocDirLock.Unlock()
 
 	snap := allocRunnerState{
 		Version:                r.config.Version,
@@ -454,9 +454,9 @@ func (r *AllocRunner) Run() {
 			continue
 		}
 
-		r.allocDirLock.RLock()
+		r.allocDirLock.Lock()
 		taskdir := r.allocDir.NewTaskDir(task.Name)
-		r.allocDirLock.RUnlock()
+		r.allocDirLock.Unlock()
 
 		tr := NewTaskRunner(r.logger, r.config, r.setTaskState, taskdir, r.Alloc(), task.Copy(), r.vaultClient)
 		r.tasks[task.Name] = tr
